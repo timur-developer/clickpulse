@@ -1,100 +1,114 @@
-# Metrics Batch Collector
+# clickpulse — ClickHouse event collector with batching and observability
 
-`Metrics Batch Collector` - это Go-сервис для приема аналитических событий по HTTP, буферизации, пакетной записи в ClickHouse и экспорта технических метрик для Prometheus и Grafana.
+![clickpulse_logo](https://raw.githubusercontent.com/timur-developer/clickpulse/refs/heads/main/clickpulse_logo.png)
 
-## Стек
+![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)
+![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC01?logo=clickhouse&logoColor=black)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white)
+![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white)
+![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 
-- Go
-- ClickHouse
-- Prometheus
-- Grafana
-- Docker Compose
-- Kubernetes manifests
+`clickpulse` is a small Go service for collecting analytical events over HTTP, buffering them in memory, and writing them to ClickHouse in batches.
 
-## Что делает сервис
+It is built as a practical backend/observability project: HTTP ingestion, validation, size/time based batching, ClickHouse storage, Prometheus metrics, Grafana dashboard, Docker Compose setup, and basic Kubernetes manifests.
 
-Приложение принимает события через `POST /events`, валидирует входной JSON, помещает события в batcher и записывает их в ClickHouse, когда выполняется одно из условий:
+Use it when you want to:
 
-- батч достигает размера `BATCH_SIZE`
-- проходит интервал `FLUSH_INTERVAL`
+- accept events through a simple HTTP API
+- reduce ClickHouse insert pressure by writing events in batches
+- flush events either by batch size or by time interval
+- expose service metrics for Prometheus and Grafana
+- run the whole stack locally with Docker Compose
 
-Дополнительно сервис отдает:
+## Contents
 
-- `GET /healthz` для health check
-- `GET /metrics` для Prometheus scraping
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start)
+- [API](#api)
+  - [POST /events](#post-events)
+  - [GET /healthz](#get-healthz)
+  - [GET /metrics](#get-metrics)
+- [Configuration](#configuration)
+- [Observability](#observability)
+- [Docker Compose](#docker-compose)
+- [Kubernetes](#kubernetes)
+- [Development](#development)
+- [License](#license)
 
-## Архитектура
+## How It Works
 
-```text
-Client / Postman / script
-        |
-        v
-   Go HTTP service
-   - POST /events
-   - GET /healthz
-   - GET /metrics
-        |
-        v
-   in-memory batcher
-   - flush by size
-   - flush by interval
-        |
-        v
-    ClickHouse
-
-Prometheus ---> scrapes /metrics
-Grafana -----> dashboards from Prometheus
+```mermaid
+flowchart LR
+    Client[HTTP client] -->|POST /events| API[Go HTTP service]
+    API --> Validator[JSON validation]
+    Validator --> Batcher[In-memory batcher]
+    Batcher -->|flush by size| CH[(ClickHouse)]
+    Batcher -->|flush by interval| CH
+    Prometheus[Prometheus] -->|scrape /metrics| API
+    Grafana[Grafana] --> Prometheus
 ```
 
-## Конфигурация
+The service receives events through `POST /events`, validates the JSON payload, and puts accepted events into an in-memory batcher.
 
-Сервис настраивается через переменные окружения.
+The batcher flushes events to ClickHouse when one of these conditions is met:
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `HTTP_PORT` | yes | HTTP server port |
-| `CLICKHOUSE_DSN` | yes | ClickHouse connection string |
-| `BATCH_SIZE` | yes | Maximum number of events in a batch |
-| `FLUSH_INTERVAL` | yes | Max time between flushes |
-| `LOG_LEVEL` | no | Log level, defaults to `info` |
+- the batch reaches `BATCH_SIZE`
+- `FLUSH_INTERVAL` passes since the previous flush
 
-Пример значений есть в `.env.example`.
+This keeps the API simple while avoiding row-by-row inserts into ClickHouse.
 
-## Локальный запуск через Docker Compose
+## Quick Start
 
-Из корня проекта выполни:
+Clone the repository and run the local stack:
 
 ```bash
+git clone https://github.com/timur-developer/clickpulse.git
+cd clickpulse
 docker compose up --build -d
-docker compose ps
 ```
 
-После запуска будут доступны:
+After startup, the services are available at:
 
-- app: `http://localhost:8080`
-- ClickHouse HTTP: `http://localhost:8123`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
+| Service | URL |
+| --- | --- |
+| clickpulse | `http://localhost:8080` |
+| ClickHouse HTTP | `http://localhost:8123` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3000` |
 
-Остановить стек:
+Send a test event:
 
 ```bash
-docker compose down
+curl -X POST http://localhost:8080/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "page_view",
+    "source": "landing",
+    "user_id": "u123",
+    "value": 1,
+    "created_at": "2026-03-27T12:00:00Z"
+  }'
 ```
 
-Остановить и удалить volumes:
+Check the service health:
 
 ```bash
-docker compose down -v
+curl http://localhost:8080/healthz
+```
+
+Check Prometheus metrics:
+
+```bash
+curl http://localhost:8080/metrics
 ```
 
 ## API
 
 ### `POST /events`
 
-Принимает одно событие в формате JSON.
+Accepts a single analytical event in JSON format.
 
-Пример запроса:
+Example request:
 
 ```json
 {
@@ -106,199 +120,152 @@ docker compose down -v
 }
 ```
 
-Успешный ответ:
+Fields:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `event_type` | string | yes | Event name, for example `page_view`, `signup`, `click` |
+| `source` | string | yes | Event source, for example `landing`, `api`, `mobile` |
+| `user_id` | string | no  | User or client identifier |
+| `value` | number | no  | Numeric event value |
+| `created_at` | string | yes | Event timestamp in RFC3339 format |
+
+Successful response:
 
 ```json
-{
-  "status": "accepted"
-}
+{"status":"accepted"}
 ```
 
-Примеры ошибок валидации:
-
-```json
-{
-  "error": "invalid request body"
-}
-```
-
-```json
-{
-  "error": "missing required field: event_type"
-}
-```
+Invalid payloads return `400 Bad Request` with an error message.
 
 ### `GET /healthz`
 
-Возвращает:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-### `GET /metrics`
-
-Возвращает метрики сервиса в формате Prometheus.
-
-## Проверка сервиса
-
-### Через Postman или curl
-
-Запрос:
-
-```bash
-curl -i \
-  -X POST http://localhost:8080/events \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "page_view",
-    "source": "landing",
-    "user_id": "u123",
-    "value": 1,
-    "created_at": "2026-03-27T12:00:00Z"
-  }'
-```
-
-Проверка health endpoint:
+Health check endpoint.
 
 ```bash
 curl http://localhost:8080/healthz
 ```
 
-Проверка метрик:
+Example response:
+
+```json
+{"status":"ok"}
+```
+
+### `GET /metrics`
+
+Prometheus scraping endpoint.
 
 ```bash
 curl http://localhost:8080/metrics
 ```
 
-### Вспомогательные скрипты
+The endpoint exposes technical metrics for HTTP traffic, accepted events, batch flushes, and ClickHouse insert errors.
 
-В проекте есть два вспомогательных скрипта:
+## Configuration
 
-- `scripts/curl_examples.sh` отправляет один пример события
-- `scripts/generate_events.sh` отправляет серию событий
+The service is configured through environment variables.
 
-Пример запуска:
+| Variable | Description | Example |
+| --- | --- | --- |
+| `HTTP_PORT` | HTTP server port | `8080` |
+| `CLICKHOUSE_DSN` | ClickHouse connection string | `http://localhost:8123?user=app&password=app` |
+| `BATCH_SIZE` | Number of events that triggers a flush | `100` |
+| `FLUSH_INTERVAL` | Time interval that triggers a flush | `5s` |
+| `LOG_LEVEL` | Application log level | `info` |
 
-```bash
-sh scripts/curl_examples.sh
-COUNT=200 sh scripts/generate_events.sh
-```
-
-## Проверка ClickHouse
-
-Сервис пишет в ClickHouse батчами, поэтому одиночное событие может появиться в таблице только после срабатывания flush по таймеру.
-
-Проверить общее количество записей:
+Example local configuration:
 
 ```bash
-docker compose exec clickhouse clickhouse-client --user app --password app --query "SELECT count() FROM default.events"
+export HTTP_PORT=8080
+export CLICKHOUSE_DSN="http://localhost:8123?user=app&password=app"
+export BATCH_SIZE=100
+export FLUSH_INTERVAL=5s
+export LOG_LEVEL=info
 ```
 
-Посмотреть последние записи:
+## Observability
 
-```bash
-docker compose exec clickhouse clickhouse-client --user app --password app --query "SELECT event_type, source, user_id, value, created_at FROM default.events ORDER BY created_at DESC LIMIT 10 FORMAT PrettyCompact"
-```
+`clickpulse` exposes metrics in Prometheus format and includes a Grafana setup for local development.
 
-Примеры аналитических запросов:
+Useful signals to watch:
 
-```bash
-docker compose exec clickhouse clickhouse-client --user app --password app --query "SELECT event_type, count() AS total FROM default.events GROUP BY event_type ORDER BY total DESC FORMAT PrettyCompact"
-```
-
-```bash
-docker compose exec clickhouse clickhouse-client --user app --password app --query "SELECT source, count() AS total FROM default.events GROUP BY source ORDER BY total DESC FORMAT PrettyCompact"
-```
-
-```bash
-docker compose exec clickhouse clickhouse-client --user app --password app --query "SELECT toStartOfMinute(created_at) AS minute, count() AS total FROM default.events GROUP BY minute ORDER BY minute DESC FORMAT PrettyCompact"
-```
-
-## Prometheus
-
-Prometheus настраивается через `prometheus.yml` и забирает метрики с `app:8080/metrics`.
-
-Полезные страницы:
-
-- `http://localhost:9090/targets`
-- `http://localhost:9090/graph`
-
-Полезные запросы:
-
-- `http_requests_total`
-- `rate(http_requests_total[1m])`
-- `events_received_total`
-- `batch_flush_total`
-- `rate(batch_flush_total[1m])`
-- `batch_size`
-- `clickhouse_insert_errors_total`
-- `histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))`
-
-## Grafana
-
-Grafana запускается с уже настроенным provisioning.
-
-- URL: `http://localhost:3000`
-- Login: `admin`
-- Password: `admin`
-
-Файлы provisioning:
-
-- `grafana/provisioning/datasources/datasource.yml`
-- `grafana/provisioning/dashboards/dashboard.yml`
-- `grafana/provisioning/dashboards/app-dashboard.json`
-
-В dashboard выведены:
-
-- HTTP RPS
-- HTTP latency p95
-- total accepted events
-- batch flush rate
-- batch size
+- request rate for `POST /events`
+- HTTP latency
+- number of accepted events
+- current batch size
+- batch flush count
 - ClickHouse insert errors
 
-## Kubernetes manifests
+This makes it easier to answer questions like:
 
-В репозитории есть базовые манифесты в `k8s/`:
+- Is the service receiving events?
+- Are requests getting slower?
+- Are batches flushing regularly?
+- Are ClickHouse inserts failing?
+- Does changing `BATCH_SIZE` or `FLUSH_INTERVAL` affect throughput?
 
-- `k8s/configmap.yaml`
-- `k8s/deployment.yaml`
-- `k8s/service.yaml`
+## Docker Compose
 
-Применение:
+The Docker Compose setup is intended for local testing and demos.
+
+Typical workflow:
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs -f clickpulse
+```
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
+Remove volumes as well:
+
+```bash
+docker compose down -v
+```
+
+## Kubernetes
+
+Basic Kubernetes manifests are stored in `k8s/`.
+
+Apply them:
 
 ```bash
 kubectl apply -f k8s/
 ```
 
-Примечания:
+The manifests are intentionally minimal and are meant as a starting point. They expect ClickHouse to be available through `CLICKHOUSE_DSN`.
 
-- манифесты показывают базовую упаковку приложения
-- deployment ожидает образ `metrics-batch-collector:latest`
-- приложение ожидает доступный ClickHouse по адресу из `CLICKHOUSE_DSN`
-- ClickHouse, Prometheus и Grafana этими манифестами не разворачиваются
+## Development
 
-## Структура репозитория
+Run tests:
 
-```text
-metrics-batch-collector/
-|-- cmd/app/main.go
-|-- internal/
-|   |-- batcher/
-|   |-- config/
-|   |-- event/
-|   |-- http/
-|   |-- metrics/
-|   `-- storage/clickhouse/
-|-- migrations/001_init.sql
-|-- grafana/provisioning/
-|-- scripts/
-|-- k8s/
-|-- docker-compose.yml
-|-- Dockerfile
-|-- prometheus.yml
-`-- README.md
+```bash
+go test ./...
 ```
+
+Run locally without Docker Compose:
+
+```bash
+export HTTP_PORT=8080
+export CLICKHOUSE_DSN="http://localhost:8123?user=app&password=app"
+export BATCH_SIZE=100
+export FLUSH_INTERVAL=5s
+
+go run ./cmd/app
+```
+
+Build the service:
+
+```bash
+go build ./...
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
