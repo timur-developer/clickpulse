@@ -8,6 +8,8 @@
 ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 
+Read this in other languages: [Russian](README.ru.md)
+
 `clickpulse` is a small Go service for collecting analytical events over HTTP, buffering them in memory, and writing them to ClickHouse in batches.
 
 It is built as a practical backend/observability project: HTTP ingestion, validation, size/time based batching, ClickHouse storage, Prometheus metrics, Grafana dashboard, Docker Compose setup, and basic Kubernetes manifests.
