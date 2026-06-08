@@ -1,6 +1,6 @@
 # clickpulse — ClickHouse event collector with batching and observability
 
-![clickpulse_logo](https://raw.githubusercontent.com/timur-developer/clickpulse/refs/heads/main/clickpulse_logo.png)
+![clickpulselogo](https://raw.githubusercontent.com/timur-developer/clickpulse/refs/heads/main/clickpulse_logo.png)
 
 ![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC01?logo=clickhouse&logoColor=black)
@@ -10,20 +10,16 @@
 
 Read this in other languages: [Russian](README.ru.md)
 
-`clickpulse` is a small Go service for collecting analytical events over HTTP, buffering them in memory, and writing them to ClickHouse in batches.
+`clickpulse` is a Go service for receiving analytical events over HTTP and writing them to ClickHouse in batches.
 
-It is built as a practical backend/observability project: HTTP ingestion, validation, size/time based batching, ClickHouse storage, Prometheus metrics, Grafana dashboard, Docker Compose setup, and basic Kubernetes manifests.
+It buffers accepted events in memory and flushes them by batch size or by time interval, reducing insert overhead while keeping the ingestion API simple.
 
-Use it when you want to:
-
-- accept events through a simple HTTP API
-- reduce ClickHouse insert pressure by writing events in batches
-- flush events either by batch size or by time interval
-- expose service metrics for Prometheus and Grafana
-- run the whole stack locally with Docker Compose
+`clickpulse` also provides observability for the ingestion and write pipeline: Prometheus metrics and Grafana dashboards help track incoming events, batch flushes, HTTP latency, current batch size, and ClickHouse insert errors.
 
 ## Contents
 
+- [Why](#why)
+- [What It Does](#what-it-does)
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start)
 - [API](#api)
@@ -36,6 +32,33 @@ Use it when you want to:
 - [Kubernetes](#kubernetes)
 - [Development](#development)
 - [License](#license)
+
+## Why
+
+Analytical events are often produced by backend services, landing pages, scripts, or internal tools. Writing each event to ClickHouse as a separate insert can add unnecessary database pressure and makes it harder to understand what is happening in the ingestion path.
+
+`clickpulse` focuses on the core flow of an event ingestion pipeline:
+
+- receive events through a simple HTTP API
+- validate incoming JSON before accepting it
+- collect accepted events in an in-memory batcher
+- flush events to ClickHouse by batch size or by time interval
+- expose observability for HTTP traffic, accepted events, batch state, flushes, and ClickHouse insert errors
+- run the supporting infrastructure locally with Docker Compose
+
+## What It Does
+
+| Area | Description |
+| --- | --- |
+| HTTP ingestion | Accepts analytical events through `POST /events` |
+| Validation | Checks required fields and JSON payload shape before accepting an event |
+| Batching | Buffers events in memory and flushes them by size or interval |
+| Storage | Writes accepted events to ClickHouse |
+| Health checks | Exposes `GET /healthz` for service health |
+| Metrics | Exposes Prometheus metrics for ingestion traffic, batching, and ClickHouse write errors |
+| Observability | Includes a Grafana dashboard for monitoring the ingestion and write pipeline |
+| Local stack | Provides Docker Compose setup for clickpulse, ClickHouse, Prometheus, and Grafana |
+| Deployment base | Provides Kubernetes manifests in `k8s/` |
 
 ## How It Works
 
@@ -162,7 +185,7 @@ Prometheus scraping endpoint.
 curl http://localhost:8080/metrics
 ```
 
-The endpoint exposes technical metrics for HTTP traffic, accepted events, batch flushes, and ClickHouse insert errors.
+The endpoint exposes metrics for HTTP traffic, accepted events, batch state, batch flushes, and ClickHouse insert errors.
 
 ## Configuration
 
@@ -188,7 +211,7 @@ export LOG_LEVEL=info
 
 ## Observability
 
-`clickpulse` exposes metrics in Prometheus format and includes a Grafana setup for local development.
+`clickpulse` exposes Prometheus metrics and includes a Grafana dashboard for observing the ingestion and write pipeline.
 
 Useful signals to watch:
 
@@ -209,7 +232,7 @@ This makes it easier to answer questions like:
 
 ## Docker Compose
 
-The Docker Compose setup is intended for local testing and demos.
+The Docker Compose setup runs clickpulse together with ClickHouse, Prometheus, and Grafana.
 
 Typical workflow:
 
@@ -233,7 +256,7 @@ docker compose down -v
 
 ## Kubernetes
 
-Basic Kubernetes manifests are stored in `k8s/`.
+Kubernetes manifests are stored in `k8s/`.
 
 Apply them:
 
@@ -241,7 +264,7 @@ Apply them:
 kubectl apply -f k8s/
 ```
 
-The manifests are intentionally minimal and are meant as a starting point. They expect ClickHouse to be available through `CLICKHOUSE_DSN`.
+The manifests provide a base setup for running the service in a cluster. They expect ClickHouse to be available through `CLICKHOUSE_DSN`.
 
 ## Development
 
